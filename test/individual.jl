@@ -20,7 +20,7 @@ function test_ind(ind::CGPInd, cfg::NamedTuple)
             @test length(node.p) == 0
         else # non-input node, test parameters
             @test length(node.p) == cfg.n_parameters
-            @test all(0.0 .<= node.p .<= 1.0)
+            @test all(0.0 .<= node.p .<= cfg.param_max)
         end
         # test that stringifying works
         @test typeof(string(node)) == String
@@ -28,9 +28,9 @@ function test_ind(ind::CGPInd, cfg::NamedTuple)
     @test typeof(ind.genes) == Array{Float64,3}
     # assert that genes encoding function, x and y are integers
     @test ind.genes[:, :, 1:3] == Int16.(ind.genes[:, :, 1:3])
-    # assert that genes encoding parameters are floating numbers in [0, 1]
+    # assert that genes encoding parameters are floating numbers in [0, 1]  # modification, max val now equals cfg.param_max    
     if cfg.n_parameters > 0
-        @test all(0.0 .<= ind.genes[:, :, 4:end] .<= 1.0)
+        @test all(0.0 .<= ind.genes[:, :, 4:end] .<= cfg.param_max)
     end
 end
 
@@ -49,17 +49,82 @@ The `arity` dictionary is necessary though.
 """
 module MinimalFunctionModuleExample
     global arity = Dict()
-    function fgen(name::Symbol, ar::Int, s1::Union{Symbol, Expr})
-        @eval function $name(x::Float64, y::Float64, p::Array{Float64})::Float64
-            $s1
+    SorX = Union{Symbol, Expr}
+    MType = Union{Nothing, Float64, Array{Float64}}
+    function fgen(name::Symbol, ar::Int, s1::SorX, s2::SorX, s3::SorX, s4::SorX;
+                safe::Bool=false)
+        if ar == 1
+            @eval function $name(x::Float64, y::MType, p::Array{Float64,1}=Float64[])::MType
+                $s1
+            end
+            if safe
+                @eval function $name(x::Array{Float64}, y::MType, p::Array{Float64,1}=Float64[])::MType
+                    try
+                        return $s4
+                    catch
+                        return x
+                    end
+                end
+            else
+                @eval function $name(x::Array{Float64}, y::MType, p::Array{Float64,1}=Float64[])::MType
+                    $s4
+                end
+            end
+        else
+            @eval function $name(x::Float64, y::Float64, p::Array{Float64,1}=Float64[])::MType
+                $s1
+            end
+            @eval function $name(x::Float64, y::Array{Float64}, p::Array{Float64,1}=Float64[])::MType
+                $s2
+            end
+            if safe
+                @eval function $name(x::Array{Float64}, y::Float64, p::Array{Float64,1}=Float64[])::MType
+                    try
+                        return $s3
+                    catch
+                        return x
+                    end
+                end
+                @eval function $name(x::Array{Float64}, y::Array{Float64}, p::Array{Float64,1}=Float64[])::MType
+                    try
+                        return $s4
+                    catch
+                        return x
+                    end
+                end
+            else
+                @eval function $name(x::Array{Float64}, y::Float64, p::Array{Float64,1}=Float64[])::MType
+                    $s3
+                end
+                @eval function $name(x::Array{Float64}, y::Array{Float64}, p::Array{Float64,1}=Float64[])::MType
+                    $s4
+                end
+            end
         end
         arity[String(name)] = ar
     end
-    fgen(:f_add, 2, :(p[1] * 0.5 * (x + y)))
-    fgen(:f_subtract, 2, :(p[1] * (x - y)))
-    fgen(:f_mult, 2, :(p[1] * x * y))
-    fgen(:f_div, 1, :(p[1] * x / 2))
-    fgen(:f_abs, 2, :(p[1] * abs(x)))
+
+    function fgen(name::Symbol, ar::Int, s1::SorX, s2::SorX, s3::SorX;
+                safe::Bool=false)
+        fgen(name, ar, s1, s2, s2, s3; safe=safe)
+    end
+
+    function fgen(name::Symbol, ar::Int, s1::SorX, s2::SorX; safe::Bool=false)
+        fgen(name, ar, s1, s1, s2, s2; safe=safe)
+    end
+
+    function fgen(name::Symbol, ar::Int, s1::SorX)
+        fgen(name, ar, s1, s1, s1, s1)
+    end
+
+    fgen(:f_add, 2, :((x + y) / 2.0), :((x .+ y) / 2.0),
+     :(.+(eqsize(x, y)...) / 2.0))
+    fgen(:f_subtract, 2, :(abs(x - y) / 2.0), :(abs.(x .- y) / 2.0),
+        :(abs.(.-(eqsize(x, y)...)) / 2.0))
+    fgen(:f_mult, 2, :(x * y), :(x .* y), :(.*(eqsize(x, y)...)))
+    fgen(:f_div, 2, :(scaled(x / y)), :(scaled(x ./ y)),
+        :(scaled(./(eqsize(x, y)...))))
+    fgen(:f_abs, 1, :(abs(x)), :(abs.(x)))
 end
 
 # Similar to CGPInd construction but uses custom set of CGP functions
@@ -133,6 +198,20 @@ end
     # @test all(ind.chromosome[1:o] .== all_genes)
     for g in all_genes
         @test g in ind.chromosome
+    end
+
+    # modify ind genes
+    ind = CGPInd(cfg)
+    
+    ind.genes[:, :, 1] .= rand(1:cfg.n_in+cfg.columns, size(ind.genes[:,:,1]))
+    ind.genes[:, :, 2] .= rand(1:cfg.n_in+cfg.columns, size(ind.genes[:,:,2]))
+    ind.genes[:, :, 3] .= rand(1:length(cfg.functions), size(ind.genes[:,:,3]))
+    ind.genes[:, :, 4:(3+cfg.n_parameters)] .= rand(1:cfg.param_max, size(ind.genes[:,:,4:(3+cfg.n_parameters)]))
+    
+    chromo = get_chromosome(cfg, ind)
+    new_ind = CGPInd(cfg, chromo)
+    for g in eachindex(ind.genes)
+        @test isapprox(new_ind.genes[g], ind.genes[g])
     end
 end
 

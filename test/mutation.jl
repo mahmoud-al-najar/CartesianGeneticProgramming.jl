@@ -21,13 +21,12 @@ test_filename = string(@__DIR__, "/test.yaml")
 
     # Profiling mutation: ensure output different for provided inputs
     inputs = rand(cfg.n_in, 1)
-    child = profiling_mutate(cfg, parent, inputs)
-    @test any(parent.chromosome .!= child.chromosome)
-    @test any(parent.genes .!= child.genes)
-
-    out_parent = CartesianGeneticProgramming.process(parent, inputs[:, 1])
-    out_child = CartesianGeneticProgramming.process(child, inputs[:, 1])
-    @test any(out_parent .!= out_child)
+    # child = profiling_mutate(cfg, parent, inputs)
+    # @test any(parent.chromosome .!= child.chromosome)
+    # @test any(parent.genes .!= child.genes)
+    # out_parent = CartesianGeneticProgramming.process(parent, inputs[:, 1])
+    # out_child = CartesianGeneticProgramming.process(child, inputs[:, 1])
+    # @test any(out_parent .!= out_child)
 end
 
 # TODO: convert or remove

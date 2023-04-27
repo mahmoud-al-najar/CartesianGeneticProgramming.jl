@@ -1,6 +1,9 @@
-export Node, CGPInd, get_genes, set_genes!, reset!, forward_connections, get_output_trace
+export Node, CGPInd, get_genes, set_genes!, reset!, forward_connections, get_output_trace, get_chromosome, get_maxs
 import Base.copy, Base.String, Base.show, Base.summary
 import Cambrian.print
+
+MType = Union{Nothing, Float64, Array{Float64}}
+SorX = Union{Symbol, Expr}
 
 "default function for nodes, will cause error if used as a function node"
 function f_null(args...)::Nothing
@@ -83,11 +86,23 @@ function CGPInd(cfg::NamedTuple, chromosome::Array{Float64},
     if haskey(kwargs_dict, :buffer)
         buffer = kwargs_dict[:buffer]
     else
-        buffer = zeros(R * C + cfg.n_in)
+        buffer = Array{MType}(nothing, R * C + cfg.n_in)
+        buffer .= 0.0
     end
     fitness = -Inf .* ones(cfg.d_fitness)
     CGPInd(cfg.n_in, cfg.n_out, cfg.n_parameters, chromosome, genes, outputs,
            nodes, buffer, fitness)
+end
+
+function get_maxs(cfg)
+    R = cfg.rows
+    C = cfg.columns
+    P = cfg.n_parameters
+    maxs = collect(1:R:R*C) .- 1
+    maxs = round.((R*C .- maxs) .* cfg.recur .+ maxs)
+    maxs = min.(R*C + cfg.n_in, maxs .+ cfg.n_in)
+    maxs = repeat(maxs, 1, R)'
+    maxs
 end
 
 function CGPInd(cfg::NamedTuple, chromosome::Array{Float64}; kwargs...)::CGPInd
@@ -97,20 +112,87 @@ function CGPInd(cfg::NamedTuple, chromosome::Array{Float64}; kwargs...)::CGPInd
     # chromosome: node genes, output genes
     genes = reshape(chromosome[1:(R*C*(3+P))], R, C, 3+P)
     # TODO: recurrency is ugly and slow
-    maxs = collect(1:R:R*C)
-    maxs = round.((R*C .- maxs) .* cfg.recur .+ maxs)
-    maxs = min.(R*C + cfg.n_in, maxs .+ cfg.n_in)
-    maxs = repeat(maxs, 1, R)'
+    maxs = get_maxs(cfg)
     genes[:, :, 1] .*= maxs
     genes[:, :, 2] .*= maxs
     genes[:, :, 3] .*= length(cfg.functions)
+    genes[:, :, 4:3+P] .*= cfg.param_max
     genes[:, :, 1:3] = Int16.(ceil.(genes[:, :, 1:3])) # ceil all genes except parameters that stay in [0,1]
     outputs = Int16.(ceil.(chromosome[(R*C*(3+P)+1):end] .* (R * C + cfg.n_in)))
     CGPInd(cfg, chromosome, genes, outputs; kwargs...)
 end
 
+function get_chromosome(cfg::NamedTuple, ind::CGPInd)
+    genes, outputs = deepcopy(ind.genes), deepcopy(ind.outputs)
+    R = cfg.rows
+    C = cfg.columns
+    P = cfg.n_parameters
+    maxs = get_maxs(cfg)
+    # genes to chromo
+    x_chromo = ((genes[:, :, 1] .- 0.5) ./ maxs)[:]
+    y_chromo = ((genes[:, :, 2] .- 0.5) ./ maxs)[:]
+    f_chromo = ((genes[:, :, 3] .- 0.5) ./ length(cfg.functions))[:]
+    p_chromo = (genes[:, :, 4:3+P] ./cfg.param_max)[:]
+    # outputs
+    o_chromo = outputs ./ (R * C + cfg.n_in)
+    # order
+    chromosome = 0 * ones(cfg.rows * cfg.columns * (3 + cfg.n_parameters) + cfg.n_out)
+    chromosome[1:C] .= x_chromo
+    chromosome[C+1:2C] .= y_chromo
+    chromosome[2C+1:3C] .= f_chromo
+    chromosome[3C+1:R*C*(3+P)] = p_chromo
+    chromosome[(R*C*(3+P)+1):end] .= o_chromo
+    chromosome
+end
+
 function CGPInd(cfg::NamedTuple; kwargs...)::CGPInd
+    function chromo_to_genes(cfg::NamedTuple, chromosome; return_output_genes=false)
+        R = cfg.rows
+        C = cfg.columns
+        P = cfg.n_parameters
+        genes = reshape(chromosome[1:(R*C*(3+P))], R, C, 3+P)
+        
+        maxs = get_maxs(cfg)
+    
+        genes[:, :, 1] .*= maxs
+        genes[:, :, 2] .*= maxs
+        genes[:, :, 3] .*= length(cfg.functions)
+        genes[:, :, 4:3+P] .*= cfg.param_max
+        genes[:, :, 1:3] = Int16.(ceil.(genes[:, :, 1:3])) # ceil all genes except parameters that stay in [0,1]
+        outputs = Int16.(ceil.(chromosome[(R*C*(3+P)+1):end] .* (R * C + cfg.n_in)))
+        if return_output_genes 
+            return genes, outputs
+        else
+            return genes
+        end
+    end
+    
+    function genes_to_chromo(cfg::NamedTuple, genes, outputs)
+        R = cfg.rows
+        C = cfg.columns
+        P = cfg.n_parameters
+    
+        maxs = get_maxs(cfg)
+    
+        # genes to chromo
+        x_chromo = (genes[:, :, 1] ./ maxs)[:]
+        y_chromo = (genes[:, :, 2] ./ maxs)[:]
+        f_chromo = (genes[:, :, 3] ./ length(cfg.functions))[:]
+        p_chromo = (genes[:, :, 4:3+P] ./cfg.param_max)[:]
+        # outputs
+        o_chromo = outputs ./ (R * C + cfg.n_in)
+        # order
+        chromosome = 0 * ones(cfg.rows * cfg.columns * (3 + cfg.n_parameters) + cfg.n_out)
+        chromosome[1:C] .= x_chromo
+        chromosome[C+1:2C] .= y_chromo
+        chromosome[2C+1:3C] .= f_chromo
+        chromosome[3C+1:R*C*(3+P)] = p_chromo
+        chromosome[(R*C*(3+P)+1):end] .= o_chromo
+        chromosome
+    end
     chromosome = rand(cfg.rows * cfg.columns * (3 + cfg.n_parameters) + cfg.n_out)
+    chr, outs = chromo_to_genes(cfg, chromosome; return_output_genes=true)
+    chromosome = genes_to_chromo(cfg, chr, outs)
     CGPInd(cfg, chromosome; kwargs...)
 end
 
@@ -120,16 +202,17 @@ function CGPInd(cfg::NamedTuple, ind::String)::CGPInd
 end
 
 function copy(n::Node)
-    Node(n.x, n.y, n.f, n.active)
+    Node(n.x, n.y, n.f, n.p, n.active)
 end
 
 function copy(ind::CGPInd)
-    buffer = zeros(length(ind.buffer))
+    buffer = Array{MType}(nothing, length(ind.buffer))
+    buffer .= 0.0
     nodes = Array{Node}(undef, length(ind.nodes))
     for i in eachindex(ind.nodes)
         nodes[i] = copy(ind.nodes[i])
     end
-    CGPInd(ind.n_in, ind.n_out, copy(ind.chromosome), copy(ind.genes),
+    CGPInd(ind.n_in, ind.n_out, ind.n_parameters, copy(ind.chromosome), copy(ind.genes),
            copy(ind.outputs), nodes, buffer, copy(ind.fitness))
 end
 
@@ -173,7 +256,6 @@ end
 
 """
     get_gene_indexes(ind::CGPInd, node_id::Integer)
-
 Given an individual and the index of one of its nodes, return the indexes of the
 chromosome used to encode this particular node.
 """
@@ -186,10 +268,8 @@ end
 
 """
     get_genes(ind::CGPInd, node_id::Integer)::Array{Float64}
-
 Given an individual and the index of one of its nodes, return the chromosome
 used to encode this particular node.
-
 Example:
     get_genes(ind, 42)
 """
@@ -203,10 +283,8 @@ end
 
 """
     get_genes(c::CGPInd, nodes::Array{<:Integer})::Array{Float64}
-
 Given an individual and an array of indexes of one of its nodes, return the
 chromosomes used to encode these particular nodes.
-
 Example:
     get_genes(ind, [7, 42])
 """

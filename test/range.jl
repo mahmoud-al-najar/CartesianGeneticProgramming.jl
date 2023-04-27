@@ -5,7 +5,7 @@ using Statistics
 
 
 @testset "Processing" begin
-    cfg = get_config("test.yaml"; functions=["f_avg", "f_max", "f_min", "f_med"])
+    cfg = get_config("test.yaml"; functions=["f_mean", "f_max", "f_min", "f_median"])
     ind = CGPInd(cfg)
 
     # test that f(0, 0, 0, 0) = 0
